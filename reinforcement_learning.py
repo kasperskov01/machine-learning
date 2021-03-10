@@ -14,6 +14,9 @@ from sklearn.datasets import fetch_openml               # Load mnist dataset
 from keras.utils.np_utils import to_categorical         # Convert to one-hot encoded labels
 from sklearn.model_selection import train_test_split    # Split dataset into training and test
 from os import path                                     # Filesystem
+from matplotlib import pyplot as plt                    # Used for creating plots
+from matplotlib import style                            # Graph style
+style.use('fivethirtyeight')
 
 def load_mnist_data():
     '''
@@ -49,20 +52,22 @@ class DeepNeuralNetwork():
 
     def initializer(self, sizes):
         '''
-            Setup the dimensions of the network
+            Setup the dimensions of the network including weights and biases.
             sizes: array containing number of nodes in each layer
         '''        
+        params = {}
 
-        input_layer = sizes[0]
-        layer_1 = sizes[1]
-        layer_2 = sizes[2]
-        output_layer = sizes[3]
-                  
-        params = {
-            'W1': np.random.randn(layer_1, input_layer) * 0.1,
-            'W2': np.random.randn(layer_2, layer_1) * 0.1,
-            'W3': np.random.randn(output_layer, layer_2) * 0.1
-        }    
+        for i in range(len(sizes) - 1):
+            # Setup weights
+            params['W' + str(i + 1)] = np.random.randn(sizes[i + 1], sizes[i]) * 0.1
+            # Setup biases
+            params['B' + str(i + 1)] = np.zeros(sizes[i + 1])
+
+        # List for tested accuracies
+        params['ACC'] = []
+        # Time training for each epoch
+        params['ACC_DT'] = []
+
         return params
 
     def sigmoid(self, x, derivative=False):
@@ -174,30 +179,52 @@ class DeepNeuralNetwork():
             y_train: Labels corresponding to x_train.
             y_data: Labels corresponding to x_val.
         '''
-        start_time = datetime.now()        
-        
+        max_epoch = len(self.params['ACC']) + self.epochs
         # Iterate over each epoch and compute accuracy of network for each iteration.      
-        for epoch in range(self.epochs):            
+        for epoch in range(len(self.params['ACC']) + 1, max_epoch):
+            print('Training epoch {} of {}...'.format(epoch, max_epoch))
+            # Start timer
+            start_time = datetime.now()        
+
             # Iterate over all training examples in dataset and tune network parameters.                                  
-            for x, y in zip(x_train, y_train):                
+            for x, y in zip(x_train, y_train):
                 output = self.forward_pass(x)                
                 new_weights = self.backward_pass(output, y)                
                 self.update_network_params(new_weights)
 
             # Test how well the network performs
             accuracy = self.compute_accuracy(x_val, y_val)
-            print('Epoch {} - Elapsed time: {} - Accuracy: {}'.format(epoch + 1, datetime.now() -  start_time, accuracy))
+            print('Epoch {} - Elapsed time: {} - Accuracy: {}'.format(epoch, datetime.now() -  start_time, accuracy * 100))
             print('Saving...')
+            
+            # Save the tested accuracy
+            self.params['ACC'] = np.append(self.params['ACC'], accuracy)
+            self.params['ACC_DT'] = np.append(self.params['ACC_DT'], (datetime.now() - start_time).total_seconds())
+            # self.params['ACC_DT'].append((datetime.now() - start_time).total_seconds())
+
+            # Save the network params to disk
             np.savez('network_params.npz', **self.params)
-            print('Done saving.')
+            print('Done saving.')            
+                        
+            acc = self.params['ACC']
+            ax.plot(range(0, len(acc)), acc * 100)
+            for i in range(len(acc)):
+                ax.annotate('{} = {}'.format(i + 1, np.round(acc[i] * 100, 1)), (i, acc[i] * 100 + 0.4), ha='center', va='center')
+
+            plt.draw()
+            plt.pause(.001)
 
 
-np.random.seed(0)
+# np.random.seed(0)
+
+fig = plt.figure()
+ax = fig.add_subplot(1,1,1)
+fig.set_size_inches(14,7)
 
 print('Loading data...')
 dataset = load_mnist_data()
 print('Creating network...')
-myNet = DeepNeuralNetwork([784, 128, 64, 10])
+myNet = DeepNeuralNetwork([784, 128, 64, 10], epochs=10)
 
 
 # Load trained network from .npz file
@@ -207,6 +234,17 @@ if path.exists(network_path):
     params = np.load(network_path)
     for key in params.files:
         myNet.params[key] = params[key]
+
+    acc = params['ACC']
+    ax.plot(range(0, len(acc)), acc * 100)
+    for i in range(len(acc)):
+        ax.annotate('{} = {}'.format(i + 1, np.round(acc[i] * 100, 1)), (i, acc[i] * 100 + 0.4), ha='center', va='center')
+
+    plt.draw()
+    plt.pause(.001)
+
+else:
+    print('No external file named \'{}\' was found.'.format(network_path))
     
 print('Training network...')
 myNet.train_network(dataset[0], dataset[1], dataset[2], dataset[3])
