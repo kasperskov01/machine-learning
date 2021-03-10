@@ -14,6 +14,7 @@ from sklearn.datasets import fetch_openml               # Load mnist dataset
 from keras.utils.np_utils import to_categorical         # Convert to one-hot encoded labels
 from sklearn.model_selection import train_test_split    # Split dataset into training and test
 from os import path                                     # Filesystem
+from tqdm import tqdm                                   # Progress bar
 from matplotlib import pyplot as plt                    # Used for creating plots
 from matplotlib import style                            # Graph style
 style.use('fivethirtyeight')
@@ -43,6 +44,7 @@ class DeepNeuralNetwork():
             sizes: Sizes of each layer in the network
         '''
         
+        self.sizes = sizes
         self.epochs = epochs
         self.learning_rate = learning_rate
         
@@ -98,50 +100,41 @@ class DeepNeuralNetwork():
             x_data: Input values for the network.
         '''
         params = self.params
-               
         params['A0'] = x_data
 
-        # Matrix vector multiplication
-        params['Z1'] = np.dot(params['W1'], params['A0'])  
-        params['A1'] = self.sigmoid(params['Z1'])
+        # Iterate over all layers in order to calculate the final output
+        for i in range(1, len(self.sizes)):            
+            params['Z' + str(i)] = np.dot(params['W' + str(i)], params['A' + str(i - 1)]) + params['B' + str(i)]
+            params['A' + str(i)] = self.sigmoid(params['Z' + str(i)])
 
-        params['Z2'] = np.dot(params['W2'], params['A1'])        
-        params['A2'] = self.sigmoid(params['Z2'])
-
-        params['Z3'] = np.dot(params['W3'], params['A2'])        
-        params['A3'] = self.sigmoid(params['Z3'])
-
-        return params['A3']
+        # Return the activations from the last layer
+        return params['A' + str(len(self.sizes) - 1)]
 
     def backward_pass(self, output, y_data):
         '''
             Using the backpropagation algorithm to calculate the updates for the neural network parameters.
             output: Result from forward pass.
-            y_data: Correct labels for given example
-
-             Note: There is a stability issue that causes warnings. This is 
-                  caused  by the dot and multiply operations on the huge arrays.
-                  
-                  RuntimeWarning: invalid value encountered in true_divide
-                  RuntimeWarning: overflow encountered in exp
-                  RuntimeWarning: overflow encountered in square
+            y_data: Correct labels for given example.
         '''
         params = self.params
-        new_weights = {}
-                
-        # Calculate W3 update
-        error = 2 * (output - y_data) / output.shape[0] * self.softmax(params['Z3'], derivative=True)
-        new_weights['W3'] = np.outer(error, params['A2'])
+        new_params = {}
 
-        # Calculate W2 update
-        error = np.dot(params['W3'].T, error) * self.sigmoid(params['Z2'], derivative=True)
-        new_weights['W2'] = np.outer(error, self.params['A1'])
-
-        # Calculate W1 update
-        error = np.dot(params['W2'].T, error) * self.sigmoid(params['Z1'], derivative=True)
-        new_weights['W1'] = np.outer(error, params['A0'])
         
-        return new_weights
+        last_layer = len(self.sizes) - 1
+
+        # Calculate last layer updates
+        error = 2 * (output - y_data) / output.shape[0] * self.softmax(params['Z' + str(last_layer)], derivative=True)
+        new_params['W' + str(last_layer)] = np.outer(error, params['A' + str(last_layer - 1)])        
+        new_params['B' + str(last_layer)] = error
+
+        # Propagate backwards and calculate other layer updates
+        for i in range(1, last_layer):            
+            # Calculate layer (last_layer - i) updates
+            error = np.dot(params['W' + str(last_layer - i + 1)].T, error) * self.sigmoid(params['Z' + str(last_layer - i)], derivative=True)
+            new_params['W' + str(last_layer - i)] = np.outer(error, self.params['A' + str(last_layer - i - 1)])
+            new_params['B' + str(last_layer - i)] = error
+        
+        return new_params
 
     def compute_accuracy(self, x_val, y_val):
         '''
@@ -167,7 +160,7 @@ class DeepNeuralNetwork():
                 eta η:              the learning rate
                 gradient ∇J(x, y):  the gradient of the objective function,
                                     i.e. the change for a specific theta θ
-        '''        
+        '''                
         for key, value in new_params.items():
             self.params[key] -= self.learning_rate * value     
 
@@ -180,14 +173,14 @@ class DeepNeuralNetwork():
             y_data: Labels corresponding to x_val.
         '''
         max_epoch = len(self.params['ACC']) + self.epochs
-        # Iterate over each epoch and compute accuracy of network for each iteration.      
+        # Iterate over each epoch and compute accuracy of network for each iteration
         for epoch in range(len(self.params['ACC']) + 1, max_epoch):
             print('Training epoch {} of {}...'.format(epoch, max_epoch))
             # Start timer
             start_time = datetime.now()        
 
-            # Iterate over all training examples in dataset and tune network parameters.                                  
-            for x, y in zip(x_train, y_train):
+            # Iterate over all training examples in dataset and tune network parameters
+            for x, y in zip(tqdm(x_train), y_train):
                 output = self.forward_pass(x)                
                 new_weights = self.backward_pass(output, y)                
                 self.update_network_params(new_weights)
@@ -199,13 +192,13 @@ class DeepNeuralNetwork():
             
             # Save the tested accuracy
             self.params['ACC'] = np.append(self.params['ACC'], accuracy)
-            self.params['ACC_DT'] = np.append(self.params['ACC_DT'], (datetime.now() - start_time).total_seconds())
-            # self.params['ACC_DT'].append((datetime.now() - start_time).total_seconds())
+            self.params['ACC_DT'] = np.append(self.params['ACC_DT'], (datetime.now() - start_time).total_seconds())            
 
             # Save the network params to disk
             np.savez('network_params.npz', **self.params)
             print('Done saving.')            
                         
+            # Draw the training statistics to an interactive diagram
             acc = self.params['ACC']
             ax.plot(range(0, len(acc)), acc * 100)
             for i in range(len(acc)):
@@ -235,8 +228,10 @@ if path.exists(network_path):
     for key in params.files:
         myNet.params[key] = params[key]
 
+    # Draw the training statistics to a diagram
     acc = params['ACC']
     ax.plot(range(0, len(acc)), acc * 100)
+    # Add annotations
     for i in range(len(acc)):
         ax.annotate('{} = {}'.format(i + 1, np.round(acc[i] * 100, 1)), (i, acc[i] * 100 + 0.4), ha='center', va='center')
 
