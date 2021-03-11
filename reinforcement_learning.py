@@ -19,6 +19,7 @@ from matplotlib import pyplot as plt                    # Used for creating plot
 from matplotlib import style                            # Graph style
 style.use('fivethirtyeight')
 
+
 def load_mnist_data():
     '''
         Load mnist labeled handwritten digits and split into training data and test data.
@@ -37,6 +38,21 @@ def load_mnist_data():
     return [x_train, x_val, y_train, y_val]
 
 
+def draw_images(images, guesses=None, labels=None):
+    '''
+        Draw a grid of misguessed images. Titles contain guesses and labels        
+    '''
+    fig2, axes = plt.subplots(5,5, figsize=(16,10), constrained_layout=True)    
+    for i,ax in enumerate(axes.flat):
+        if i < len(images):        
+            ax.imshow(np.reshape(images[i], (28,28)))
+            ax.axis('off')            
+            ax.set_title('Guess: {}. Label: {}'.format(guesses[i], labels[i]))
+        else: break
+    fig2.suptitle('Digits from MNIST dataset', fontsize=16)
+    plt.draw()
+
+
 class DeepNeuralNetwork():    
     def __init__(self, sizes, epochs=10, learning_rate=0.01):   
         '''
@@ -47,6 +63,8 @@ class DeepNeuralNetwork():
         self.sizes = sizes
         self.epochs = epochs
         self.learning_rate = learning_rate
+
+        self.ReLU = np.vectorize(self.relu_not_vect)
         
         # All network parameters are saved here
         self.params = self.initializer(sizes)
@@ -72,7 +90,7 @@ class DeepNeuralNetwork():
 
         return params
 
-    def sigmoid(self, x, derivative=False):
+    def sigmoid_not_vect(self, x, derivative=False):
         '''
             Activation function with the caractiristic S-shape. The values are treated separately and will have a value between 0 and 1.
             x: Vector with input values.
@@ -81,6 +99,14 @@ class DeepNeuralNetwork():
         if derivative:
             return (np.exp(-x))/((np.exp(-x)+1)**2)
         return 1/(1+np.exp(-x))
+
+    def relu_not_vect(self, x, derivative=False):    
+        if x > 0:
+            if derivative:
+                return 1
+            else: return x
+        else:
+            return 0          
 
     def softmax(self, x, derivative=False):
         '''
@@ -105,7 +131,7 @@ class DeepNeuralNetwork():
         # Iterate over all layers in order to calculate the final output
         for i in range(1, len(self.sizes)):            
             params['Z' + str(i)] = np.dot(params['W' + str(i)], params['A' + str(i - 1)]) + params['B' + str(i)]
-            params['A' + str(i)] = self.sigmoid(params['Z' + str(i)])
+            params['A' + str(i)] = self.ReLU(params['Z' + str(i)])
 
         # Return the activations from the last layer
         return params['A' + str(len(self.sizes) - 1)]
@@ -130,7 +156,7 @@ class DeepNeuralNetwork():
         # Propagate backwards and calculate other layer updates
         for i in range(1, last_layer):            
             # Calculate layer (last_layer - i) updates
-            error = np.dot(params['W' + str(last_layer - i + 1)].T, error) * self.sigmoid(params['Z' + str(last_layer - i)], derivative=True)
+            error = np.dot(params['W' + str(last_layer - i + 1)].T, error) * self.ReLU(params['Z' + str(last_layer - i)], derivative=True)
             new_params['W' + str(last_layer - i)] = np.outer(error, self.params['A' + str(last_layer - i - 1)])
             new_params['B' + str(last_layer - i)] = error
         
@@ -144,12 +170,19 @@ class DeepNeuralNetwork():
             y_val: List of vectors containing output labels.
         '''
         predictions = []
-        for x, y in zip(x_val, y_val):
+        wrong = [[],[]]
+        for i, (x, y) in enumerate(zip(x_val, y_val)):
             pred = self.forward_pass(x)
-            predictions.append(pred.argmax() == y.argmax())
-        return np.mean(predictions)
+            if (pred.argmax() == y.argmax()):
+                predictions.append(True)
+            else:
+                predictions.append(False)
+                wrong[0].append(i)
+                wrong[1].append(pred.argmax())
 
-    def update_network_params(self, new_params):
+        return (np.mean(predictions), wrong)
+
+    def sgd_update_network_params(self, new_params):
         '''
             Update network parameters according to update rule from
             Stochastic Gradient Descent.
@@ -162,9 +195,37 @@ class DeepNeuralNetwork():
                                     i.e. the change for a specific theta θ
         '''                
         for key, value in new_params.items():
-            self.params[key] -= self.learning_rate * value     
+            self.params[key] -= self.learning_rate * value
 
-    def train_network(self, x_train, x_val, y_train, y_val):
+
+    def mini_b_update_network_params(self, new_params, divisor):
+        for key, value in new_params.items():
+            self.params[key] -= value / divisor
+
+
+    def iterate_minibatches(self, inputs, targets, batch_size, shuffle=True):
+        # Make sure the number of examples matches the number of targets
+        assert inputs.shape[0] == targets.shape[0]
+
+        indices = np.arange(inputs.shape[0])        # Create list of all indices            
+        if shuffle: np.random.shuffle(indices)      # Shuffle indices
+
+        # Remove indices from the end of indices array so that (indices.shape[0] % batch_size == 0)
+        mod = indices.shape[0] % batch_size
+        if not mod == 0: indices = indices[0: - int(indices.shape[0] % batch_size)]
+
+        # Iterate over every start index for mini batches in indices array
+        for start_idx in range(0, indices.shape[0] - batch_size + 1, batch_size):
+            end_idx = start_idx + batch_size
+            if shuffle: 
+                excerpt = indices[start_idx : end_idx]
+            else:
+                excerpt = slice(start_idx, end_idx)
+            # yield is used instead of return, as it is faster, and we only need to iterate over the mini-batches once
+            yield [inputs[excerpt], targets[excerpt]]        
+
+
+    def train_network(self, x_train, x_val, y_train, y_val, optimizer='MINI_B'):
         '''
             Train the network using the specified training and test data.
             x_train: List of input vectors for the network to use in training.
@@ -176,17 +237,38 @@ class DeepNeuralNetwork():
         # Iterate over each epoch and compute accuracy of network for each iteration
         for epoch in range(len(self.params['ACC']) + 1, max_epoch):
             print('Training epoch {} of {}...'.format(epoch, max_epoch))
-            # Start timer
+            
             start_time = datetime.now()        
 
-            # Iterate over all training examples in dataset and tune network parameters
-            for x, y in zip(tqdm(x_train), y_train):
-                output = self.forward_pass(x)                
-                new_weights = self.backward_pass(output, y)                
-                self.update_network_params(new_weights)
+            if optimizer == 'MINI_B':
+                # Mini-batching
+                # Tune parameters with average from every example in a mini-batch at a time
+                mini_batch_size = 4
+                mini_batches = self.iterate_minibatches(x_train, y_train, mini_batch_size, shuffle=True)            
+                for mini_batch in tqdm(mini_batches, total=(x_train.shape[0] - (x_train.shape[0] % mini_batch_size)) / mini_batch_size):
+                    batch_x, batch_y = mini_batch
+                    avg_new_weights = None
+                    
+                    for x, y in zip(batch_x, batch_y):
+                        output = self.forward_pass(x)                    
+                        new_weights = self.backward_pass(output, y)                
+                        if not avg_new_weights: avg_new_weights = new_weights
+                        else: 
+                            for key, value in new_weights.items():
+                                avg_new_weights[key] -= self.learning_rate * value
+                    self.mini_b_update_network_params(new_weights, batch_x.shape[0])
+
+            elif optimizer == 'SGD':
+                # Stochastic gradient descent
+                # Iterate over all training examples in dataset and tune network parameters for each example
+                for x, y in zip(tqdm(x_train), y_train):
+                    output = self.forward_pass(x)                
+                    new_weights = self.backward_pass(output, y)                
+                    self.sgd_update_network_params(new_weights)
+
 
             # Test how well the network performs
-            accuracy = self.compute_accuracy(x_val, y_val)
+            accuracy, wrong = self.compute_accuracy(x_val, y_val)
             print('Epoch {} - Elapsed time: {} - Accuracy: {}'.format(epoch, datetime.now() -  start_time, accuracy * 100))
             print('Saving...')
             
@@ -197,12 +279,17 @@ class DeepNeuralNetwork():
             # Save the network params to disk
             np.savez('network_params.npz', **self.params)
             print('Done saving.')            
-                        
+                    
             # Draw the training statistics to an interactive diagram
             acc = self.params['ACC']
             ax.plot(range(0, len(acc)), acc * 100)
             for i in range(len(acc)):
-                ax.annotate('{} = {}'.format(i + 1, np.round(acc[i] * 100, 1)), (i, acc[i] * 100 + 0.4), ha='center', va='center')
+                ax.annotate('{} = {}'.format(i + 1, np.round(acc[i] * 100, 1)), (i, acc[i] * 100 + 0.4), ha='center', va='center')            
+
+            # Draw diagram with 100 wrong guesses
+            wrong_imgs = [[x_train[i]] for i in wrong[0]]             
+            labels = [y_train[i].argmax() for i in wrong[0]]
+            draw_images(wrong_imgs, labels=labels, guesses=wrong[1])
 
             plt.draw()
             plt.pause(.001)
@@ -216,8 +303,20 @@ fig.set_size_inches(14,7)
 
 print('Loading data...')
 dataset = load_mnist_data()
+
+# print('Exporting digits...')
+# # Export n first digits
+# n = 100
+# digits = dataset[0][slice(100)]
+# digits_export = {}
+# digits_export['digits'] = digits
+# np.savez(str(n) + '_digits.npz', **digits_export)
+
+# print('Drawing digits...')
+# draw_images(dataset[0][slice(100)])
+
 print('Creating network...')
-myNet = DeepNeuralNetwork([784, 128, 64, 10], epochs=10)
+myNet = DeepNeuralNetwork([784, 128, 64, 10], epochs=20, learning_rate=0.005)
 
 
 # Load trained network from .npz file
